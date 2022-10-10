@@ -1,6 +1,7 @@
 package redisqueue
 
 import (
+	"context"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -12,14 +13,20 @@ func TestNewRedisClient(t *testing.T) {
 		options := &RedisOptions{}
 		r := newRedisClient(options)
 
-		err := r.Ping().Err()
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		err := r.Ping(ctx).Err()
 		assert.NoError(tt, err)
 	})
 
 	t.Run("defaults options if it's nil", func(tt *testing.T) {
 		r := newRedisClient(nil)
 
-		err := r.Ping().Err()
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		err := r.Ping(ctx).Err()
 		assert.NoError(tt, err)
 	})
 }
@@ -29,7 +36,10 @@ func TestRedisPreflightChecks(t *testing.T) {
 		options := &RedisOptions{Addr: "localhost:0"}
 		r := newRedisClient(options)
 
-		err := redisPreflightChecks(r)
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		err := redisPreflightChecks(ctx, r)
 		require.Error(tt, err)
 
 		assert.Contains(tt, err.Error(), "dial tcp")

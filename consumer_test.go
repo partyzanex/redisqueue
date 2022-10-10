@@ -1,11 +1,12 @@
 package redisqueue
 
 import (
+	"context"
 	"os"
 	"testing"
 	"time"
 
-	"github.com/go-redis/redis/v7"
+	"github.com/go-redis/redis/v8"
 	"github.com/pkg/errors"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -71,7 +72,7 @@ func TestNewConsumerWithOptions(t *testing.T) {
 }
 
 func TestRegister(t *testing.T) {
-	fn := func(msg *Message) error {
+	fn := func(_ context.Context, msg *Message) error {
 		return nil
 	}
 
@@ -86,7 +87,7 @@ func TestRegister(t *testing.T) {
 }
 
 func TestRegisterWithLastID(t *testing.T) {
-	fn := func(msg *Message) error {
+	fn := func(_ context.Context, msg *Message) error {
 		return nil
 	}
 
@@ -132,13 +133,17 @@ func TestRun(t *testing.T) {
 		c, err := NewConsumer()
 		require.NoError(tt, err)
 
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
 		go func() {
 			err := <-c.Errors
 			require.Error(tt, err)
 			assert.Equal(tt, "at least one consumer function needs to be registered", err.Error())
+			cancel()
 		}()
 
-		c.Run()
+		c.Run(ctx)
 	})
 
 	t.Run("calls the ConsumerFunc on for a message", func(tt *testing.T) {
@@ -155,12 +160,15 @@ func TestRun(t *testing.T) {
 		p, err := NewProducer()
 		require.NoError(tt, err)
 
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
 		// create consumer group
-		c.redis.XGroupDestroy(tt.Name(), c.options.GroupName)
-		c.redis.XGroupCreateMkStream(tt.Name(), c.options.GroupName, "$")
+		c.redis.XGroupDestroy(ctx, tt.Name(), c.options.GroupName)
+		c.redis.XGroupCreateMkStream(ctx, tt.Name(), c.options.GroupName, "$")
 
 		// enqueue a message
-		err = p.Enqueue(&Message{
+		err = p.Enqueue(ctx, &Message{
 			Stream: tt.Name(),
 			Values: map[string]interface{}{"test": "value"},
 		})
@@ -168,7 +176,7 @@ func TestRun(t *testing.T) {
 
 		// register a handler that will assert the message and then shut down
 		// the consumer
-		c.Register(tt.Name(), func(m *Message) error {
+		c.Register(tt.Name(), func(_ context.Context, m *Message) error {
 			assert.Equal(tt, "value", m.Values["test"])
 			c.Shutdown()
 			return nil
@@ -178,10 +186,11 @@ func TestRun(t *testing.T) {
 		go func() {
 			err := <-c.Errors
 			require.NoError(tt, err)
+			cancel()
 		}()
 
 		// run the consumer
-		c.Run()
+		c.Run(ctx)
 	})
 
 	t.Run("reclaims pending messages according to ReclaimInterval", func(tt *testing.T) {
@@ -199,28 +208,31 @@ func TestRun(t *testing.T) {
 		p, err := NewProducer()
 		require.NoError(tt, err)
 
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
 		// create consumer group
-		c.redis.XGroupDestroy(tt.Name(), c.options.GroupName)
-		c.redis.XGroupCreateMkStream(tt.Name(), c.options.GroupName, "$")
+		c.redis.XGroupDestroy(ctx, tt.Name(), c.options.GroupName)
+		c.redis.XGroupCreateMkStream(ctx, tt.Name(), c.options.GroupName, "$")
 
 		// enqueue a message
 		msg := &Message{
 			Stream: tt.Name(),
 			Values: map[string]interface{}{"test": "value"},
 		}
-		err = p.Enqueue(msg)
+		err = p.Enqueue(ctx, msg)
 		require.NoError(tt, err)
 
 		// register a handler that will assert the message and then shut down
 		// the consumer
-		c.Register(tt.Name(), func(m *Message) error {
+		c.Register(tt.Name(), func(_ context.Context, m *Message) error {
 			assert.Equal(tt, msg.ID, m.ID)
 			c.Shutdown()
 			return nil
 		})
 
 		// read the message but don't acknowledge it
-		res, err := c.redis.XReadGroup(&redis.XReadGroupArgs{
+		res, err := c.redis.XReadGroup(ctx, &redis.XReadGroupArgs{
 			Group:    c.options.GroupName,
 			Consumer: "failed_consumer",
 			Streams:  []string{tt.Name(), ">"},
@@ -239,10 +251,11 @@ func TestRun(t *testing.T) {
 		go func() {
 			err := <-c.Errors
 			require.NoError(tt, err)
+			cancel()
 		}()
 
 		// run the consumer
-		c.Run()
+		c.Run(ctx)
 	})
 
 	t.Run("doesn't reclaim if there is no VisibilityTimeout set", func(tt *testing.T) {
@@ -262,9 +275,12 @@ func TestRun(t *testing.T) {
 		})
 		require.NoError(tt, err)
 
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
 		// create consumer group
-		c.redis.XGroupDestroy(tt.Name(), c.options.GroupName)
-		c.redis.XGroupCreateMkStream(tt.Name(), c.options.GroupName, "$")
+		c.redis.XGroupDestroy(ctx, tt.Name(), c.options.GroupName)
+		c.redis.XGroupCreateMkStream(ctx, tt.Name(), c.options.GroupName, "$")
 
 		// enqueue a message
 		msg1 := &Message{
@@ -275,19 +291,19 @@ func TestRun(t *testing.T) {
 			Stream: tt.Name(),
 			Values: map[string]interface{}{"test": "value2"},
 		}
-		err = p.Enqueue(msg1)
+		err = p.Enqueue(ctx, msg1)
 		require.NoError(tt, err)
 
 		// register a handler that will assert the message and then shut down
 		// the consumer
-		c.Register(tt.Name(), func(m *Message) error {
+		c.Register(tt.Name(), func(_ context.Context, m *Message) error {
 			assert.Equal(tt, msg2.ID, m.ID)
 			c.Shutdown()
 			return nil
 		})
 
 		// read the message but don't acknowledge it
-		res, err := c.redis.XReadGroup(&redis.XReadGroupArgs{
+		res, err := c.redis.XReadGroup(ctx, &redis.XReadGroupArgs{
 			Group:    c.options.GroupName,
 			Consumer: "failed_consumer",
 			Streams:  []string{tt.Name(), ">"},
@@ -299,20 +315,21 @@ func TestRun(t *testing.T) {
 		require.Equal(tt, msg1.ID, res[0].Messages[0].ID)
 
 		// add another message to the stream to let the consumer consume it
-		err = p.Enqueue(msg2)
+		err = p.Enqueue(ctx, msg2)
 		require.NoError(tt, err)
 
 		// watch for consumer errors
 		go func() {
 			err := <-c.Errors
 			require.NoError(tt, err)
+			cancel()
 		}()
 
 		// run the consumer
-		c.Run()
+		c.Run(ctx)
 
 		// check if the pending message is still there
-		pendingRes, err := c.redis.XPendingExt(&redis.XPendingExtArgs{
+		pendingRes, err := c.redis.XPendingExt(ctx, &redis.XPendingExtArgs{
 			Stream: tt.Name(),
 			Group:  c.options.GroupName,
 			Start:  "-",
@@ -342,26 +359,29 @@ func TestRun(t *testing.T) {
 		})
 		require.NoError(tt, err)
 
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
 		// create consumer group
-		c.redis.XGroupDestroy(tt.Name(), c.options.GroupName)
-		c.redis.XGroupCreateMkStream(tt.Name(), c.options.GroupName, "$")
+		c.redis.XGroupDestroy(ctx, tt.Name(), c.options.GroupName)
+		c.redis.XGroupCreateMkStream(ctx, tt.Name(), c.options.GroupName, "$")
 
 		// enqueue a message
 		msg := &Message{
 			Stream: tt.Name(),
 			Values: map[string]interface{}{"test": "value"},
 		}
-		err = p.Enqueue(msg)
+		err = p.Enqueue(ctx, msg)
 		require.NoError(tt, err)
 
 		// register a noop handler that should never be called
-		c.Register(tt.Name(), func(m *Message) error {
+		c.Register(tt.Name(), func(_ context.Context, m *Message) error {
 			t.Fail()
 			return nil
 		})
 
 		// read the message but don't acknowledge it
-		res, err := c.redis.XReadGroup(&redis.XReadGroupArgs{
+		res, err := c.redis.XReadGroup(ctx, &redis.XReadGroupArgs{
 			Group:    c.options.GroupName,
 			Consumer: "failed_consumer",
 			Streams:  []string{tt.Name(), ">"},
@@ -373,13 +393,14 @@ func TestRun(t *testing.T) {
 		require.Equal(tt, msg.ID, res[0].Messages[0].ID)
 
 		// delete the message
-		err = c.redis.XDel(tt.Name(), msg.ID).Err()
+		err = c.redis.XDel(ctx, tt.Name(), msg.ID).Err()
 		require.NoError(tt, err)
 
 		// watch for consumer errors
 		go func() {
 			err := <-c.Errors
 			require.NoError(tt, err)
+			cancel()
 		}()
 
 		// in 10ms, shut down the consumer
@@ -389,10 +410,10 @@ func TestRun(t *testing.T) {
 		}()
 
 		// run the consumer
-		c.Run()
+		c.Run(ctx)
 
 		// check that there are no pending messages
-		pendingRes, err := c.redis.XPendingExt(&redis.XPendingExtArgs{
+		pendingRes, err := c.redis.XPendingExt(ctx, &redis.XPendingExtArgs{
 			Stream: tt.Name(),
 			Group:  c.options.GroupName,
 			Start:  "-",
@@ -417,12 +438,15 @@ func TestRun(t *testing.T) {
 		p, err := NewProducer()
 		require.NoError(tt, err)
 
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
 		// create consumer group
-		c.redis.XGroupDestroy(tt.Name(), c.options.GroupName)
-		c.redis.XGroupCreateMkStream(tt.Name(), c.options.GroupName, "$")
+		c.redis.XGroupDestroy(ctx, tt.Name(), c.options.GroupName)
+		c.redis.XGroupCreateMkStream(ctx, tt.Name(), c.options.GroupName, "$")
 
 		// enqueue a message
-		err = p.Enqueue(&Message{
+		err = p.Enqueue(ctx, &Message{
 			Stream: tt.Name(),
 			Values: map[string]interface{}{"test": "value"},
 		})
@@ -430,10 +454,10 @@ func TestRun(t *testing.T) {
 
 		// register a handler that will assert the message, shut down the
 		// consumer, and then panic with a string
-		c.Register(tt.Name(), func(m *Message) error {
+		c.Register(tt.Name(), func(_ context.Context, m *Message) error {
 			assert.Equal(tt, "value", m.Values["test"])
 			c.Shutdown()
-			panic("this is a panic")
+			panic(any("this is a panic"))
 		})
 
 		// watch for the panic
@@ -441,10 +465,11 @@ func TestRun(t *testing.T) {
 			err := <-c.Errors
 			require.Error(tt, err)
 			assert.Contains(tt, err.Error(), "this is a panic")
+			cancel()
 		}()
 
 		// run the consumer
-		c.Run()
+		c.Run(ctx)
 	})
 
 	t.Run("returns an error on an error panic", func(tt *testing.T) {
@@ -461,12 +486,15 @@ func TestRun(t *testing.T) {
 		p, err := NewProducer()
 		require.NoError(tt, err)
 
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
 		// create consumer group
-		c.redis.XGroupDestroy(tt.Name(), c.options.GroupName)
-		c.redis.XGroupCreateMkStream(tt.Name(), c.options.GroupName, "$")
+		c.redis.XGroupDestroy(ctx, tt.Name(), c.options.GroupName)
+		c.redis.XGroupCreateMkStream(ctx, tt.Name(), c.options.GroupName, "$")
 
 		// enqueue a message
-		err = p.Enqueue(&Message{
+		err = p.Enqueue(ctx, &Message{
 			Stream: tt.Name(),
 			Values: map[string]interface{}{"test": "value"},
 		})
@@ -474,10 +502,10 @@ func TestRun(t *testing.T) {
 
 		// register a handler that will assert the message, shut down the
 		// consumer, and then panic with an error
-		c.Register(tt.Name(), func(m *Message) error {
+		c.Register(tt.Name(), func(_ context.Context, m *Message) error {
 			assert.Equal(tt, "value", m.Values["test"])
 			c.Shutdown()
-			panic(errors.New("this is a panic"))
+			panic(any(errors.New("this is a panic")))
 		})
 
 		// watch for the panic
@@ -485,9 +513,10 @@ func TestRun(t *testing.T) {
 			err := <-c.Errors
 			require.Error(tt, err)
 			assert.Contains(tt, err.Error(), "this is a panic")
+			cancel()
 		}()
 
 		// run the consumer
-		c.Run()
+		c.Run(ctx)
 	})
 }
