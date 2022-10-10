@@ -137,7 +137,7 @@ func TestRun(t *testing.T) {
 		defer cancel()
 
 		go func() {
-			err := <-c.Errors
+			err := <-c.Errors()
 			require.Error(tt, err)
 			assert.Equal(tt, "at least one consumer function needs to be registered", err.Error())
 			cancel()
@@ -184,7 +184,7 @@ func TestRun(t *testing.T) {
 
 		// watch for consumer errors
 		go func() {
-			err := <-c.Errors
+			err := <-c.Errors()
 			require.NoError(tt, err)
 			cancel()
 		}()
@@ -249,7 +249,7 @@ func TestRun(t *testing.T) {
 
 		// watch for consumer errors
 		go func() {
-			err := <-c.Errors
+			err := <-c.Errors()
 			require.NoError(tt, err)
 			cancel()
 		}()
@@ -320,7 +320,7 @@ func TestRun(t *testing.T) {
 
 		// watch for consumer errors
 		go func() {
-			err := <-c.Errors
+			err := <-c.Errors()
 			require.NoError(tt, err)
 			cancel()
 		}()
@@ -398,7 +398,7 @@ func TestRun(t *testing.T) {
 
 		// watch for consumer errors
 		go func() {
-			err := <-c.Errors
+			err := <-c.Errors()
 			require.NoError(tt, err)
 			cancel()
 		}()
@@ -462,7 +462,7 @@ func TestRun(t *testing.T) {
 
 		// watch for the panic
 		go func() {
-			err := <-c.Errors
+			err := <-c.Errors()
 			require.Error(tt, err)
 			assert.Contains(tt, err.Error(), "this is a panic")
 			cancel()
@@ -510,7 +510,7 @@ func TestRun(t *testing.T) {
 
 		// watch for the panic
 		go func() {
-			err := <-c.Errors
+			err := <-c.Errors()
 			require.Error(tt, err)
 			assert.Contains(tt, err.Error(), "this is a panic")
 			cancel()

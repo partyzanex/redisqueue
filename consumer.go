@@ -73,7 +73,7 @@ type Consumer struct {
 	// have a listener on it. If you don't parts of the consumer could stop
 	// functioning when errors occur due to the blocking nature of unbuffered
 	// channels.
-	Errors chan error
+	errors chan error
 
 	options   *ConsumerOptions
 	redis     redis.UniversalClient
@@ -136,7 +136,7 @@ func NewConsumerWithOptions(options *ConsumerOptions) (*Consumer, error) {
 	}
 
 	return &Consumer{
-		Errors: make(chan error),
+		errors: make(chan error),
 
 		options:   options,
 		redis:     r,
@@ -185,7 +185,7 @@ func (c *Consumer) Register(stream string, fn ConsumerFunc) {
 // and all of the in-flight messages have been processed.
 func (c *Consumer) Run(ctx context.Context) {
 	if len(c.consumers) == 0 {
-		c.Errors <- errors.New("at least one consumer function needs to be registered")
+		c.errors <- errors.New("at least one consumer function needs to be registered")
 		return
 	}
 
@@ -194,7 +194,7 @@ func (c *Consumer) Run(ctx context.Context) {
 		err := c.redis.XGroupCreateMkStream(ctx, stream, c.options.GroupName, consumer.id).Err()
 		// ignoring the BUSYGROUP error makes this a noop
 		if err != nil && err.Error() != "BUSYGROUP Consumer Group name already exists" {
-			c.Errors <- errors.Wrap(err, "error creating consumer group")
+			c.errors <- errors.Wrap(err, "error creating consumer group")
 			return
 		}
 	}
@@ -230,6 +230,11 @@ func (c *Consumer) Shutdown() {
 	if c.options.VisibilityTimeout == 0 {
 		c.stopPoll <- struct{}{}
 	}
+}
+
+// Errors returns an errors channel.
+func (c *Consumer) Errors() <-chan error {
+	return c.errors
 }
 
 // reclaim runs in a separate goroutine and checks the list of pending messages
@@ -271,7 +276,7 @@ func (c *Consumer) reclaim(ctx context.Context) {
 						},
 					).Result()
 					if err != nil && err != redis.Nil {
-						c.Errors <- errors.Wrap(err, "error listing pending messages")
+						c.errors <- errors.Wrap(err, "error listing pending messages")
 						break
 					}
 
@@ -294,7 +299,7 @@ func (c *Consumer) reclaim(ctx context.Context) {
 								},
 							).Result()
 							if err != nil && err != redis.Nil {
-								c.Errors <- errors.Wrapf(err, "error claiming %d message(s)", len(msgs))
+								c.errors <- errors.Wrapf(err, "error claiming %d message(s)", len(msgs))
 								break
 							}
 							// If the Redis nil error is returned, it means that
@@ -309,7 +314,7 @@ func (c *Consumer) reclaim(ctx context.Context) {
 							if err == redis.Nil {
 								err = c.redis.XAck(ctx, stream, c.options.GroupName, r.ID).Err()
 								if err != nil {
-									c.Errors <- errors.Wrapf(err, "error acknowledging after failed claim for %q stream and %q message", stream, r.ID)
+									c.errors <- errors.Wrapf(err, "error acknowledging after failed claim for %q stream and %q message", stream, r.ID)
 									continue
 								}
 							}
@@ -319,7 +324,7 @@ func (c *Consumer) reclaim(ctx context.Context) {
 
 					newID, err := incrementMessageID(res[len(res)-1].ID)
 					if err != nil {
-						c.Errors <- err
+						c.errors <- err
 						break
 					}
 
@@ -364,7 +369,7 @@ func (c *Consumer) poll(ctx context.Context) {
 				if err == redis.Nil {
 					continue
 				}
-				c.Errors <- errors.Wrap(err, "error reading redis stream")
+				c.errors <- errors.Wrap(err, "error reading redis stream")
 				continue
 			}
 
@@ -403,12 +408,12 @@ func (c *Consumer) work(ctx context.Context) {
 		case msg := <-c.queue:
 			err := c.process(ctx, msg)
 			if err != nil {
-				c.Errors <- errors.Wrapf(err, "error calling ConsumerFunc for %q stream and %q message", msg.Stream, msg.ID)
+				c.errors <- errors.Wrapf(err, "error calling ConsumerFunc for %q stream and %q message", msg.Stream, msg.ID)
 				continue
 			}
 			err = c.redis.XAck(ctx, msg.Stream, c.options.GroupName, msg.ID).Err()
 			if err != nil {
-				c.Errors <- errors.Wrapf(err, "error acknowledging after success for %q stream and %q message", msg.Stream, msg.ID)
+				c.errors <- errors.Wrapf(err, "error acknowledging after success for %q stream and %q message", msg.Stream, msg.ID)
 				continue
 			}
 		case <-c.stopWorkers:
